@@ -87,10 +87,6 @@ class VLLMModel(BaseLLMModel):
                 
                 message = response.choices[0].text
                 
-                # Log token usage if available
-                if hasattr(response, 'usage') and response.usage:
-                    self.logger.info(f"vLLM Token Usage - Prompt: {response.usage.prompt_tokens}, Completion: {response.usage.completion_tokens}")
-                
                 if not self._validate_response(message):
                     self.logger.warning(f"Invalid response received: {message}")
                     retry_count += 1
@@ -159,7 +155,7 @@ class OllamaModel(BaseLLMModel):
         # Import ollama here to avoid dependency issues
         try:
             import ollama
-            self.client = ollama.Client(host=base_url, timeout=300)
+            self.client = ollama.Client(host=base_url)
         except ImportError:
             raise ImportError("Please install ollama: pip install ollama")
         
@@ -199,11 +195,6 @@ class OllamaModel(BaseLLMModel):
                 )
                 
                 message = response['message']['content']
-                
-                # Log token usage
-                prompt_tokens = response.get('prompt_eval_count', 0)
-                completion_tokens = response.get('eval_count', 0)
-                self.logger.info(f"Ollama Token Usage - Prompt: {prompt_tokens}, Completion: {completion_tokens}")
                 
                 if not self._validate_response(message):
                     self.logger.warning(f"Invalid response received: {message}")

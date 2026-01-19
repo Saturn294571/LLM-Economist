@@ -1,0 +1,16 @@
+numpy
+pandas
+scipy
+torch
+wandb
+requests
+openai
+google-generativeai
+vllm
+ollama
+# For dev extras
+pytest>=6.0.0
+pytest-cov>=2.0.0
+black>=22.0.0
+flake8>=4.0.0
+isort>=5.0.0

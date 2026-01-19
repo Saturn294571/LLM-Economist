@@ -135,7 +135,7 @@ def run_simulation(args):
         if k % args.two_timescale == 0 and args.planner_type == 'LLM' and k >= args.warmup:
             if args.scenario == 'democratic':
                 # Use ThreadPoolExecutor for parallel execution of agent actions
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, args.num_agents)) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_agents) as executor:
                     if args.platforms:
                         max_retries = 10
                         retry_count = 0
@@ -213,7 +213,7 @@ def run_simulation(args):
         for i, agent in enumerate(agents):
             agent.tax_paid = tax_indv[i]
         if args.scenario == 'bounded' and args.use_multithreading:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, args.num_agents)) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_agents) as executor:
                 futures = [executor.submit(agents[i].update_utility, k, post_tax_incomes[i], tax_rebate_avg, tax_planner.swf) for i in range(args.num_agents)]
                 concurrent.futures.wait(futures)
         else:
@@ -296,7 +296,7 @@ def create_argument_parser():
     parser.add_argument('--worker-type', default='LLM', choices=['LLM', 'FIXED', 'ONE_LLM'], help='Type of worker agents')
     parser.add_argument('--planner-type', default='LLM', choices=['LLM', 'US_FED', 'SAEZ', 'SAEZ_THREE', 'SAEZ_FLAT', 'UNIFORM'], help='Type of tax planner')
     parser.add_argument('--max-timesteps', type=int, default=1000, help='Maximum number of timesteps for the simulation')
-    parser.add_argument('--history-len', type=int, default=20, help='Length of history to consider')
+    parser.add_argument('--history-len', type=int, default=50, help='Length of history to consider')
     parser.add_argument('--two-timescale', type=int, default=25, help='Interval for two-timescale updates')
     parser.add_argument('--debug', type=bool, default=True, help='Enable debug mode') 
     parser.add_argument('--llm', default='llama3:8b', type=str, help='Language model to use')

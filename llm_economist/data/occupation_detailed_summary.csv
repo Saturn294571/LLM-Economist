@@ -1,0 +1,11 @@
+Occupation_Label,SEX_Label,Under 18,18-24,25-34,35-44,45-54,55-64,65-74,75+
+Software Developer,Male,0,10,50,40,30,20,5,1
+Software Developer,Female,0,8,45,35,25,15,4,1
+Nurse,Male,0,5,20,20,15,10,5,1
+Nurse,Female,0,20,80,70,60,40,20,5
+Teacher,Male,0,5,30,40,35,25,10,2
+Teacher,Female,0,15,100,120,110,80,40,10
+Construction Worker,Male,5,50,100,90,80,60,20,2
+Construction Worker,Female,0,2,5,4,3,2,1,0
+Retail Worker,Male,50,200,150,120,100,80,40,10
+Retail Worker,Female,60,250,180,150,130,100,50,15
