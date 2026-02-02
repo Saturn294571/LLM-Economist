@@ -294,7 +294,7 @@ class Worker(LLMAgent):
         super().__init__(llm, port, name, prompt_algo, history_len, timeout, args=args)
         self.logger = logging.getLogger('main')
         self.max_timesteps = max_timesteps
-        self.z = 0  # pre-tax income
+        self.z = 0  # output (Q) for monopoly scenario
         self.l = 0  # number of labor hours
         if skill == -1:
             self.v = np.random.uniform(1.24, 159.1)  # skill level
@@ -322,49 +322,61 @@ class Worker(LLMAgent):
         else:
             raise ValueError('Invalid scenario.')
 
-        self.tax_paid = 0    # tax
+        self.tax_paid = 0    # unused in monopoly scenario
         self.two_timescale = two_timescale
 
         # llm predicted variables
         self.z_pred = 0
         self.u_pred = 0
 
-        self.c = 0.0005   # labor disutility coefficient
-        self.r = 1.0      # role coefficient
-        self.delta = 3.5 # labor disutility exponent
+        self.c = 0.0005   # unused in monopoly scenario
+        self.r = 1.0      # role coefficient (unused in monopoly scenario)
+        self.delta = 3.5 # unused in monopoly scenario
         self.utility = 0
         self.adjusted_utility = 0
         # self.ETA = 0.1
-        if self.utility_type == 'egotistical':
-            utility_name = 'isoelastic utility'
-        elif self.utility_type == 'altruistic':
-            utility_name = 'social welfare'
-        elif self.utility_type == 'adversarial':
-            utility_name = 'negative social welfare'
-        else:
-            raise ValueError('Invalid utility type')
+
+        # Monopoly environment parameters (exogenous policy)
+        self.alpha = args.alpha
+        self.capital = args.capital
+        self.base_productivity = args.productivity
+        self.rho = args.rho
+        self.tau = args.tau
+        self.wage = args.wage
+        self.demand_a = args.demand_a
+        self.demand_b = args.demand_b
+        self.output = 0.0
+        self.price = 0.0
+        self.profit = 0.0
+        self.surplus = 0.0
         if self.role == 'default':
-            self.system_prompt = 'You are ' + self.name + ', a citizen of Princetonia. Your skill level is ' + str(self.v) + f' with an expected income of {self.v*40} at 40 hours of labor each week.'\
-                    ' Each year you will have the option to choose the number of hours of labor to perform each week. \
-                    You can work overtime (>40 hours per week) or undertime (<40 hours per week). \
-                    You will receive income z proportional to the number of hours worked and your skill level. \
-                    Your goal is to maximize your ' + utility_name + '. \
-                    Make sure to sufficiently explore different amounts of LABOR before exploiting the best one for maximum utility u. \
-                    Once you find the maximum utility, only output LABOR corresponding to maximum utility u. \
-                    Use the JSON format: {\"LABOR\": \"X\"} and replace \"X\" with your answer.\n'
-                    # Use the JSON format: {\"LABOR\": \"X\",\"z\": \"X\", \"u\": \"X\"} and replace \"X\" with your answer.\n'
+            self.system_prompt = (
+                f'You are {self.name}, the sole firm in a monopoly market. '
+                f'Each year you choose labor L in hours to maximize firm profit. '
+                f'Production: Q = A(rho) * K0^{self.alpha} * L^{1 - self.alpha}. '
+                f'Productivity: A(rho) = A0*(1+rho) with A0={self.base_productivity}. '
+                f'Inverse demand: P(Q) = a - bQ, with a={self.demand_a}, b={self.demand_b}. '
+                f'Policy is exogenous: output tax tau={self.tau}, productivity shifter rho={self.rho}. '
+                f'Wage is w={self.wage}. Capital K0={self.capital} is fixed. '
+                f'Profit: pi = P*Q - w*L - tau*Q. '
+                'Choose LABOR to maximize profit. '
+                'Use the JSON format: {"LABOR": "X"} and replace "X" with your answer.\n'
+            )
         else:
             assert self.utility_type == 'egotistical', 'Only egotistical utility is supported for personas'
-            self.system_prompt = 'You are ' + self.name + ', a citizen of Princetonia. Your skill level is ' + str(self.v) + f' with an expected income of {self.v*40} at 40 hours of labor each week.'\
-                    ' Each year you will have the option to choose the number of hours of labor to perform each week. \
-                    You can work overtime (>40 hours per week) or undertime (<40 hours per week). \
-                    You will receive income z proportional to the number of hours worked and your skill level. \
-                    Your goal is to maximize your adjusted utility ' + utility_name + '. \
-                    Make sure to sufficiently explore different amounts of LABOR before exploiting the best one for maximum utility u. \
-                    Once you find the maximum utility, only output LABOR corresponding to maximum utility u. \
-                    Use the JSON format: {\"LABOR\": \"X\"} and replace \"X\" with your answer.\n'
-                    # Use the JSON format: {\"LABOR\": \"X\",\"z\": \"X\", \"u\": \"X\"} and replace \"X\" with your answer.\n'
-        self.logger.info("[WORKER INIT] My name is " + name + " My skill level is " + str(self.v) + " My role is " + self.role + " My utility type is " + self.utility_type)
+            self.system_prompt = (
+                f'You are {self.name}, the sole firm in a monopoly market. '
+                f'Each year you choose labor L in hours to maximize firm profit. '
+                f'Production: Q = A(rho) * K0^{self.alpha} * L^{1 - self.alpha}. '
+                f'Productivity: A(rho) = A0*(1+rho) with A0={self.base_productivity}. '
+                f'Inverse demand: P(Q) = a - bQ, with a={self.demand_a}, b={self.demand_b}. '
+                f'Policy is exogenous: output tax tau={self.tau}, productivity shifter rho={self.rho}. '
+                f'Wage is w={self.wage}. Capital K0={self.capital} is fixed. '
+                f'Profit: pi = P*Q - w*L - tau*Q. '
+                'Choose LABOR to maximize profit. '
+                'Use the JSON format: {"LABOR": "X"} and replace "X" with your answer.\n'
+            )
+        self.logger.info("[WORKER INIT] name=" + name + " role=" + self.role + " utility_type=" + self.utility_type)
         self.init_message_history()
 
         # self.best_labor = 0
@@ -387,56 +399,45 @@ class Worker(LLMAgent):
         self.z_tilde = z_tilde
         return z_tilde - self.c * np.power(self.l, self.delta)
 
-    def update_utility(self, timestep: float, post_tax_income: float, tax_rebate: float, swf: float) -> float:
-        z_tilde = post_tax_income + tax_rebate    # post-tax income
-        if self.utility_type == 'egotistical':
-            self.utility = self.compute_isoelastic_utility(post_tax_income, tax_rebate)
-        elif self.utility_type == 'altruistic':
-            self.utility = swf
-        elif self.utility_type == 'adversarial':
-            self.utility = -swf
-        else:
-            raise ValueError('Invalid utility type')
+    def productivity(self) -> float:
+        return max(0.0, self.base_productivity * (1.0 + self.rho))
+
+    def compute_output(self, labor: float) -> float:
+        if labor <= 0:
+            return 0.0
+        return self.productivity() * (self.capital ** self.alpha) * (labor ** (1 - self.alpha))
+
+    def compute_price(self, output: float) -> float:
+        return max(0.0, self.demand_a - self.demand_b * output)
+
+    def compute_profit(self, labor: float, output: float, price: float) -> float:
+        return price * output - self.wage * labor - self.tau * output
+
+    def compute_surplus(self, labor: float, output: float) -> float:
+        return self.demand_a * output - 0.5 * self.demand_b * output ** 2 - self.wage * labor
+
+    def update_utility(self, timestep: float, output: float, price: float, profit: float, surplus: float) -> float:
+        self.output = output
+        self.price = price
+        self.profit = profit
+        self.surplus = surplus
+        self.utility = profit
         self.labor_history.append(self.l)
 
-        self.rebate = tax_rebate
-        self.tax_paid = self.z - post_tax_income
-        # avg_utility = np.average(self.utility_history[:-self.history_len])
-        # Update episode history
         if self.scenario == 'democratic':
             self.message_history[timestep]['historical'] += f'Current leader: {self.leader}\n'
-        self.message_history[timestep]['historical'] += f'pre-tax income: z = s * l = {self.z}\n'
-        self.message_history[timestep]['historical'] += f'tax_i = {self.tax_paid}\n'
-        self.message_history[timestep]['historical'] += f'rebate = {tax_rebate}\n'
-        self.message_history[timestep]['historical'] += f'post-tax income: z~ = z - tax_i + rebate = {z_tilde}\n'
+        self.message_history[timestep]['historical'] += f'output: Q = {self.output}\n'
+        self.message_history[timestep]['historical'] += f'price: P = {self.price}\n'
+        self.message_history[timestep]['historical'] += f'profit: pi = {self.profit}\n'
+        self.message_history[timestep]['historical'] += f'social surplus: W = {self.surplus}\n'
         if self.role == 'default':
-            if self.utility_type == 'egotistical':
-                utility_def = 'z~ - c * l^d'
-            elif self.utility_type == 'altruistic':
-                utility_def = 'u_1/z_1 + ... + u_N/z_N'
-            elif self.utility_type == 'adversarial':
-                utility_def = '-u_1/z_1 - ... - u_N/z_N'
-            else:
-                raise ValueError('Invalid utility type')
-            self.message_history[timestep]['historical'] += f'utility: u = {utility_def} = {self.utility}\n'
+            self.message_history[timestep]['historical'] += f'utility: u = pi = {self.utility}\n'
             self.utility_history.append(self.utility)
             self.message_history[timestep]['metric'] = self.utility
-        else:    
-            role_reflect_msg = f'{GEN_ROLE_MESSAGES[self.role]}\nBased on your summary of this year:\n{self.message_history[timestep]["historical"]} are you satisfied with the overall tax policy (including tax_i and rebate)?\n'
-            role_reflect_msg += 'Let\'s think step by step. Your thought should no more than 4 sentences. Use the JSON format: {\"thought\":\"<step-by-step-thinking>\", \"ANSWER\": \"X\"} and replace \"X\" with \"YES\" or \"NO\".\n'
-            
-            system_prompt_backup = self.system_prompt
-            self.system_prompt = ''
-            self.r = self.call_llm(role_reflect_msg, timestep, ['ANSWER'], self.parse_role_answer)
-            self.system_prompt = system_prompt_backup
-            self.adjusted_utility = self.utility * self.r
+        else:
+            self.adjusted_utility = self.utility
             self.utility_history.append(self.adjusted_utility)
             self.message_history[timestep]['metric'] = self.adjusted_utility
-
-            self.message_history[timestep]['historical'] += f'isoelastic utility: u~ = z~ - c * l^d = {self.utility}\n'
-            self.message_history[timestep]['historical'] += f'satisfaction: r = {self.r}\n'
-            self.message_history[timestep]['historical'] += f'adjusted utility: u = r * u~ = {self.adjusted_utility}\n'
-        # self.message_history[timestep]['historical'] += f'average utility: u = z~ - c * l^d = {avg_utility}\n'
 
         # reason about other agents effect on utility:
         # TODO: which utility to use for reasoning?
@@ -536,13 +537,13 @@ class Worker(LLMAgent):
         # return (output_tax_rates, float(items[1]))
         return (output_delta,)
 
-    def act_labor(self, timestep: int, tax_rates: list[float], planner_state=None) -> float:
-        self.add_message(timestep, Message.UPDATE, tax=tax_rates)
+    def act_labor(self, timestep: int, policy=None, planner_state=None) -> float:
+        self.add_message(timestep, Message.UPDATE, policy=policy)
         self.l = self.act_llm(timestep, ['LABOR'], self.parse_labor)[0]
         # self.l, self.z_pred, self.u_pred = self.act_llm(timestep, ['LABOR', 'z', 'u'], self.parse_labor)
         self.add_message(timestep, Message.ACTION)
         self.add_message_history_timestep(timestep+1) # add for next timestep
-        self.z = self.l * self.v
+        self.z = self.compute_output(self.l)
         return self.z
     
     def act_pre_vote(self, timestep: int):
@@ -595,15 +596,15 @@ class Worker(LLMAgent):
         except ValueError:
             return ([0]*self.num_brackets,)
     
-    def act_utility_labor(self, timestep: int, tax_rates: list[float], planner_state: str):
+    def act_utility_labor(self, timestep: int, policy=None, planner_state: str=None):
         # for adversarial and altruistic actions
-        self.add_message(timestep, Message.UPDATE, tax=tax_rates)
+        self.add_message(timestep, Message.UPDATE, policy=policy)
         worker_state = self.get_historical_message(timestep, include_user_prompt=True)
         msg = planner_state + worker_state
         self.l = self.prompt_io(msg, timestep, ['LABOR'], self.parse_labor)[0]
         self.add_message(timestep, Message.ACTION)
         self.add_message_history_timestep(timestep+1) # add for next timestep
-        self.z = self.l * self.v
+        self.z = self.compute_output(self.l)
         return self.z
         
     
@@ -619,26 +620,31 @@ class Worker(LLMAgent):
         self.message_history[timestep]['leader'] += f" Leader's action: {formatted_policy}."
         return
     
-    def add_message(self, timestep: int, m_type: Message, tax: list[float]=None) -> None:
+    def add_message(self, timestep: int, m_type: Message, policy=None) -> None:
         if m_type == Message.SYSTEM:
             return
         elif m_type == Message.UPDATE:
-            assert tax is not None
-            self.message_history[timestep]['historical'] += f'TAX: = {tax}\n'
-            self.message_history[timestep]['historical'] += f'skill: s = {self.v}\n'
+            if policy is not None:
+                self.tau = policy.get('tau', self.tau)
+                self.rho = policy.get('rho', self.rho)
+            self.message_history[timestep]['historical'] += f'policy: tau={self.tau}, rho={self.rho}\n'
+            self.message_history[timestep]['historical'] += f'productivity: A={self.productivity()}\n'
+            self.message_history[timestep]['historical'] += f'capital: K0={self.capital}\n'
+            self.message_history[timestep]['historical'] += f'demand: P(Q)=a-bQ with a={self.demand_a}, b={self.demand_b}\n'
+            self.message_history[timestep]['historical'] += f'wage: w={self.wage}\n'
             # self.best_labor = np.argmax(self.labor_avg_util) * 10
             # self.best_utility = np.max(self.labor_avg_util)
             # self.message_history[timestep]['user_prompt'] += f'The best LABOR choice historically was LABOR={self.best_labor} hours corresponding to utility u={self.best_utility}. '
             # self.logger.info(self.utility_history[-self.history_len:])
             avg_utility = np.average(self.utility_history[-self.history_len:])
             avg_labor = round(np.average(self.labor_history[-self.history_len:]), -1)
-            self.message_history[timestep]['user_prompt'] += f'The running average LABOR choice historically was average LABOR={avg_labor} hours corresponding to average utility u={avg_utility}. '
+            self.message_history[timestep]['user_prompt'] += f'The running average LABOR choice historically was average LABOR={avg_labor} hours corresponding to average profit pi={avg_utility}. '
             self.logger.info(f'[running avg {self.name}] {avg_labor} {avg_utility}')
             best_str = ''
             if timestep > .9 * self.max_timesteps or (timestep+1) % self.two_timescale == 0:
                 best_str = ' best'
             else:
-                self.message_history[timestep]['user_prompt'] += 'Use the historical data to influence your answer in order to maximize utility u, while balancing exploration and exploitation by choosing varying amounts of LABOR. '
+                self.message_history[timestep]['user_prompt'] += 'Use the historical data to influence your answer in order to maximize profit pi, while balancing exploration and exploitation by choosing varying amounts of LABOR. '
             self.message_history[timestep]['user_prompt'] += f'Next year, you may perform LABOR: [0,10,20,30,40,50,60,70,80,90,100] hours. Please choose the{best_str} amount of LABOR to perform. '
             # self.message_history[timestep]['user_prompt'] += 'Try different values of LABOR before picking the one that corresponds to the highest utility u. '
             # self.message_history[timestep]['user_prompt'] += 'Also compute the expected income z and utility u. ' 
@@ -654,17 +660,16 @@ class Worker(LLMAgent):
         return
 
     def log_stats(self, timestep: int, logger: dict, debug: bool=False) -> dict:
-        logger[f"skill_{self.name}"] = self.v
         logger[f"labor_{self.name}"] = self.l
-        logger[f"pretax_income_{self.name}"] = self.z
-        logger[f"rebate_{self.name}"] = self.rebate
-        logger[f"tax_paid_{self.name}"] = self.tax_paid
-        if self.utility_type == 'egotistical':
-            logger[f"posttax_income_{self.name}"] = self.z_tilde
+        logger[f"output_{self.name}"] = self.output
+        logger[f"price_{self.name}"] = self.price
+        logger[f"profit_{self.name}"] = self.profit
+        logger[f"surplus_{self.name}"] = self.surplus
+        logger[f"policy_tau_{self.name}"] = self.tau
+        logger[f"policy_rho_{self.name}"] = self.rho
+        logger[f"productivity_{self.name}"] = self.productivity()
         logger[f"utility_{self.name}"] = self.utility
         logger[f"role_{self.name}"] = self.role # strings do not log correctly in wandb
-        logger[f"satisfaction_{self.name}"] = self.r
-        logger[f"adjusted_utility_{self.name}"] = self.adjusted_utility
         if self.scenario == 'democratic':
             logger[f"vote_{self.name}"] = (self.name, self.vote)
         # LLM info debug
@@ -673,10 +678,7 @@ class Worker(LLMAgent):
         # logger[f"llm_income_diff_{self.name}"] = np.abs(self.z_pred-self.z)
         # logger[f"llm_utility_diff_{self.name}"] = np.abs(self.u_pred-self.utility)
         if debug:
-            if self.utility_type == 'egotistical':
-                self.logger.info(f"[WORKER] {self.name} t={timestep}:\nskill={self.v}\nlabor={self.l}\nz={self.z}\nz_tilde={self.z_tilde}\ntax={self.tax_paid}\nrebate={self.rebate}\nu={self.utility}\nrole={self.role}\nsatisfaction={self.r}")
-            else:
-                self.logger.info(f"[WORKER] {self.name} t={timestep}:\nskill={self.v}\nlabor={self.l}\nz={self.z}\ntax={self.tax_paid}\nrebate={self.rebate}\nu={self.utility}\nrole={self.role}\nsatisfaction={self.r}")
+            self.logger.info(f"[WORKER] {self.name} t={timestep}:\nlabor={self.l}\nQ={self.output}\nP={self.price}\nprofit={self.profit}\nsurplus={self.surplus}\nu={self.utility}")
             
             # self.logger.info(f"llm_z={self.z_pred}\nllm_u={self.u_pred}\nllm_z_diff={np.abs(self.z_pred-self.z)}\nllm_u_diff={np.abs(self.u_pred-self.utility)}")
         return logger
@@ -686,7 +688,7 @@ class FixedWorker(LLMAgent):
     def __init__(self, name: str, history_len: int=10, timeout: int=10, skill: int=-1, labor: int=-1, args=None) -> None:
         super().__init__('None', 0, name=name, history_len=history_len, timeout=timeout, args=args)
         self.logger = logging.getLogger('main')
-        self.z = 0  # pre-tax income
+        self.z = 0  # output (Q) for monopoly scenario
         if labor == -1:
             self.l = np.random.randint(0, 100)  # number of labor hours
         else:
@@ -696,14 +698,14 @@ class FixedWorker(LLMAgent):
         else:
             self.v = skill
 
-        self.tax_paid = 0    # tax
+        self.tax_paid = 0    # unused in monopoly scenario
 
         # llm predicted variables
         self.z_pred = 0
         self.u_pred = 0
 
-        self.c = 0.0005   # labor disutility coefficient
-        self.delta = 3.5 # labor disutility exponent
+        self.c = 0.0005   # unused in monopoly scenario
+        self.delta = 3.5 # unused in monopoly scenario
         self.utility = 0
         self.utility_history = []
         self.labor_history = []
@@ -711,6 +713,20 @@ class FixedWorker(LLMAgent):
         self.tax_paid = 0
         self.rebate = 0
         self.z_tilde = 0
+
+        # Monopoly environment parameters (exogenous policy)
+        self.alpha = args.alpha
+        self.capital = args.capital
+        self.base_productivity = args.productivity
+        self.rho = args.rho
+        self.tau = args.tau
+        self.wage = args.wage
+        self.demand_a = args.demand_a
+        self.demand_b = args.demand_b
+        self.output = 0.0
+        self.price = 0.0
+        self.profit = 0.0
+        self.surplus = 0.0
         
         self.act = self.act_labor
 
@@ -718,8 +734,25 @@ class FixedWorker(LLMAgent):
     def labor(self):
         return self.l
     
-    def act_labor(self, timestep: int, tax_rates: list[float], planner_state=None) -> float:
-        self.z = self.l * self.v
+    def productivity(self) -> float:
+        return max(0.0, self.base_productivity * (1.0 + self.rho))
+
+    def compute_output(self, labor: float) -> float:
+        if labor <= 0:
+            return 0.0
+        return self.productivity() * (self.capital ** self.alpha) * (labor ** (1 - self.alpha))
+
+    def compute_price(self, output: float) -> float:
+        return max(0.0, self.demand_a - self.demand_b * output)
+
+    def compute_profit(self, labor: float, output: float, price: float) -> float:
+        return price * output - self.wage * labor - self.tau * output
+
+    def compute_surplus(self, labor: float, output: float) -> float:
+        return self.demand_a * output - 0.5 * self.demand_b * output ** 2 - self.wage * labor
+
+    def act_labor(self, timestep: int, policy=None, planner_state=None) -> float:
+        self.z = self.compute_output(self.l)
         return self.z
 
     def compute_isoelastic_utility(self, post_tax_income: float, tax_rebate: float) -> float:
@@ -727,22 +760,24 @@ class FixedWorker(LLMAgent):
         self.z_tilde = z_tilde
         return z_tilde - self.c * np.power(self.l, self.delta)
 
-    def update_utility(self, timestep: float, post_tax_income: float, tax_rebate: float, swf: float=0) -> float:
-        self.tax_paid = self.z - post_tax_income
-        self.utility = self.compute_isoelastic_utility(post_tax_income, tax_rebate)
+    def update_utility(self, timestep: float, output: float, price: float, profit: float, surplus: float) -> float:
+        self.output = output
+        self.price = price
+        self.profit = profit
+        self.surplus = surplus
+        self.utility = profit
         return self.utility
 
     def log_stats(self, timestep: int, wandb_logger: dict, debug: bool=False) -> dict:
-        wandb_logger[f"skill_{self.name}"] = self.v
         wandb_logger[f"labor_{self.name}"] = self.l
-        wandb_logger[f"pretax_income_{self.name}"] = self.z
-        if self.utility_type == 'egotistical':
-            wandb_logger[f"posttax_income_{self.name}"] = self.z_tilde
-        wandb_logger[f"tax_paid_{self.name}"] = self.tax_paid
+        wandb_logger[f"output_{self.name}"] = self.output
+        wandb_logger[f"price_{self.name}"] = self.price
+        wandb_logger[f"profit_{self.name}"] = self.profit
+        wandb_logger[f"surplus_{self.name}"] = self.surplus
+        wandb_logger[f"policy_tau_{self.name}"] = self.tau
+        wandb_logger[f"policy_rho_{self.name}"] = self.rho
+        wandb_logger[f"productivity_{self.name}"] = self.productivity()
         wandb_logger[f"utility_{self.name}"] = self.utility
         if debug:
-            if self.utility_type == 'egotistical':
-                self.logger.info(f"[WORKER] {self.name} t={timestep}:\nskill={self.v}\nlabor={self.l}\nz={self.z}\nz_tilde={self.z_tilde}\ntax={self.tax_paid}\nu={self.utility}")
-            else:
-                self.logger.info(f"[WORKER] {self.name} t={timestep}:\nskill={self.v}\nlabor={self.l}\nz={self.z}\ntax={self.tax_paid}\nu={self.utility}")
+            self.logger.info(f"[WORKER] {self.name} t={timestep}:\nlabor={self.l}\nQ={self.output}\nP={self.price}\nprofit={self.profit}\nsurplus={self.surplus}\nu={self.utility}")
         return wandb_logger

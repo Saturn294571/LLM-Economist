@@ -20,6 +20,7 @@ class LLMAgent:
                  K: int=3,
                  args=None) -> None:
         assert args is not None
+        self.args = args
         
         self.bracket_setting = args.bracket_setting
         self.num_brackets = get_num_brackets(self.bracket_setting)

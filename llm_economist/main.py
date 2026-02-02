@@ -12,10 +12,8 @@ import wandb
 import random
 import numpy as np
 import time
-from .utils.common import distribute_agents, count_votes, rGB2, GEN_ROLE_MESSAGES
-from .agents.worker import Worker, FixedWorker, distribute_personas
+from .agents.worker import Worker, FixedWorker
 from .agents.llm_agent import TestAgent
-from .agents.planner import TaxPlanner, FixedTaxPlanner
 
 
 def setup_logging(args):
@@ -34,6 +32,9 @@ def setup_logging(args):
 def run_simulation(args):
     """Run the main simulation."""
     logger = logging.getLogger('main')
+    if args.num_agents != 1:
+        logger.warning(f"Monopoly scenario requires 1 agent. Overriding num_agents={args.num_agents} to 1.")
+        args.num_agents = 1
     
     # Test LLM connectivity
     if args.worker_type == 'LLM' or args.planner_type == 'LLM':
@@ -45,36 +46,18 @@ def run_simulation(args):
             if args.worker_type == 'LLM' or args.planner_type == 'LLM':
                 sys.exit(1)
     
-    # Initialize skill distribution
-    if args.agent_mix == 'uniform':
-        skills = [-1] * args.num_agents  # maps to uniform distribution in worker.py
-    elif args.agent_mix == 'us_income':
-        # U.S. incomes to skill level (income level is at 40 hours per week)
-        skills = [float(x / 40) for x in rGB2(args.num_agents)] 
-        print(skills)
-        logger.info(f"Skills sampled from GB2 Distribution: {skills}")
-    else:
-        raise ValueError(f'Unknown agent mix: {args.agent_mix}')
+    # Initialize skill distribution (unused in monopoly but kept for compatibility)
+    skills = [-1] * args.num_agents
     
     # Initialize agents
     agents = []
     personas = []
     
-    if args.scenario == 'rational':
+    if args.scenario == 'monopoly':
         personas = ['default' for i in range(args.num_agents)]
         utility_types = ['egotistical' for i in range(args.num_agents)]
-    elif args.scenario in ('bounded', 'democratic'):
-        # Generate personas
-        persona_data = distribute_personas(args.num_agents, args.llm, args.port, args.service)
-        global GEN_ROLE_MESSAGES
-        GEN_ROLE_MESSAGES.clear()
-        GEN_ROLE_MESSAGES.update(persona_data)
-        personas = list(GEN_ROLE_MESSAGES.keys())
-        
-        assert (args.percent_ego + args.percent_alt + args.percent_adv) == 100
-        utility_types = distribute_agents(args.num_agents, [args.percent_ego, args.percent_alt, args.percent_adv])
-        print('utility_types', utility_types)
-        logger.info(f"Utility Types: {utility_types}")
+    else:
+        raise ValueError(f'Unknown scenario: {args.scenario}')
     
     # Create worker agents
     for i in range(args.num_agents):
@@ -98,18 +81,8 @@ def run_simulation(args):
             agent = FixedWorker(name, history_len=args.history_len, labor=np.random.randint(40, 61), args=args)
         agents.append(agent)
     
-    # Initialize tax planner
-    if args.planner_type == 'LLM':
-        planner_history = args.history_len
-        if args.num_agents > 20:
-            planner_history = args.history_len//(args.num_agents) * 20
-        
-        tax_planner = TaxPlanner(args.llm, args.port, 'Joe', 
-                                 history_len=planner_history, prompt_algo=args.prompt_algo, 
-                                 max_timesteps=args.max_timesteps, num_agents=args.num_agents, args=args)
-    elif args.planner_type in ['US_FED', 'SAEZ', 'SAEZ_FLAT', 'SAEZ_THREE', 'UNIFORM']:
-        tax_planner = FixedTaxPlanner('Joe', args.planner_type, history_len=args.history_len, skills=skills, args=args)
-    tax_rates = tax_planner.tax_rates
+    # Monopoly: exogenous policy, no planner optimization
+    policy = {"tau": args.tau, "rho": args.rho}
     
     # Initialize wandb logging
     if args.wandb:
@@ -129,103 +102,26 @@ def run_simulation(args):
         
         wandb_logger = {}
         
-        # Get new tax rates
-        workers_stats = [(agent.z, agent.utility) for agent in agents]
-        # do not set tax rates during warmup period
-        if k % args.two_timescale == 0 and args.planner_type == 'LLM' and k >= args.warmup:
-            if args.scenario == 'democratic':
-                # Use ThreadPoolExecutor for parallel execution of agent actions
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, args.num_agents)) as executor:
-                    if args.platforms:
-                        max_retries = 10
-                        retry_count = 0
-                        candidates = []
-                        while not candidates and retry_count < max_retries:
-                            futures0 = [executor.submit(agent.act_pre_vote, k) for agent in agents]
-                            concurrent.futures.wait(futures0)
-                            candidates = [(agent.name.split("_")[-1], agent.platform) for agent in agents if agent.platform != None]
-                            retry_count += 1  # Prevent infinite loop
-                        logger.info(f"Candidates: {candidates}")
-                        print("Candidates: ", candidates)
-                        if not candidates:
-                            print("No candidates, so all agent.vote were not updated, and current leader stays in power")
-                            logger.info(f"No candidates, so all agent.vote were not updated, and current leader stays in power")
-                        else:
-                            futures = [executor.submit(agent.act_vote_platform, candidates, k) for agent in agents]
-                            concurrent.futures.wait(futures)
-                    else:
-                        futures = [executor.submit(agent.act_vote, k) for agent in agents]
-                        concurrent.futures.wait(futures)
-                votes_list = [agent.vote for agent in agents]
-                print("Votes: ", votes_list)
-                leader_agent = count_votes(votes_list)
-                leader = agents[leader_agent] # unnecessary
-                wandb_logger[f"leader"] = leader_agent
-                print("leader: ", leader_agent)
-                if args.platforms:
-                    for agent in agents:
-                        agent.update_leader(k, leader_agent, candidates)
-                    tax_planner.update_leader(k, leader_agent, candidates)
-                else:
-                    for agent in agents:
-                        agent.update_leader(k, leader_agent)
-                    tax_planner.update_leader(k, leader_agent)
-                # get tax rate
-                # get message from planner for agent features only
-                planner_state = tax_planner.get_state(k, workers_stats, True)
-                # find tax rate
-                tax_delta = agents[leader_agent].act_plan(k, planner_state)[0]
-                print("act_leader: ", tax_delta)
-                for agent in agents:
-                    agent.update_leader_action(k, tax_delta)
-                tax_planner.update_leader_action(k, tax_delta) # not necessary potentially with act_log_only, which format preferred?
-                tax_rates = tax_planner.act_log_only(tax_delta, k)
-                for agent in agents:
-                    agent.tax_rates = tax_rates
-            else:
-                tax_rates = tax_planner.act(k, workers_stats)
-                print("act: ", tax_rates)
-        elif args.planner_type == 'LLM':
-            tax_planner.add_obs_msg(k, workers_stats)
-            tax_planner.add_act_msg(k, tax_rates=tax_rates)
-
         planner_state = None
-        if args.percent_ego < 100:
-            planner_state = tax_planner.get_state(k, workers_stats, False) # for adversarial and altruistic agents
             
         if args.use_multithreading:
             # Use ThreadPoolExecutor for parallel execution of agent actions
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_agents) as executor:
-                futures = [executor.submit(agent.act, k, tax_rates, planner_state) for agent in agents]
+                futures = [executor.submit(agent.act, k, policy, planner_state) for agent in agents]
                 concurrent.futures.wait(futures)
         else:
             for i in range(args.num_agents):
-                agents[i].act(k, tax_rates, planner_state)
+                agents[i].act(k, policy, planner_state)
 
-        pre_tax_incomes = [agents[i].z for i in range(args.num_agents)]
-        
-        # Calculate taxes
-        post_tax_incomes, total_tax = tax_planner.apply_taxes(tax_rates, pre_tax_incomes)
-        tax_indv = np.array(pre_tax_incomes) - np.array(post_tax_incomes)
-        tax_rebate_avg = total_tax / args.num_agents
-        
-        # Update agent utilities
+        # Update agent utilities with monopoly outcomes
         for i, agent in enumerate(agents):
-            agent.tax_paid = tax_indv[i]
-        if args.scenario == 'bounded' and args.use_multithreading:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, args.num_agents)) as executor:
-                futures = [executor.submit(agents[i].update_utility, k, post_tax_incomes[i], tax_rebate_avg, tax_planner.swf) for i in range(args.num_agents)]
-                concurrent.futures.wait(futures)
-        else:
-            for i, agent in enumerate(agents):
-                agent.update_utility(k, post_tax_incomes[i], tax_rebate_avg, tax_planner.swf)
+            output = agent.compute_output(agent.l)
+            price = agent.compute_price(output)
+            profit = agent.compute_profit(agent.l, output, price)
+            surplus = agent.compute_surplus(agent.l, output)
+            agent.update_utility(k, output, price, profit, surplus)
         for i, agent in enumerate(agents):
             agent.log_stats(k, wandb_logger, debug=args.debug)
-        
-        # Log tax planner stats
-        # use isoelastic utility by default for altruistic/adversarial planner swf
-        u = [agents[i].utility if agents[i].utility_type == 'egotistical' else agents[i].compute_isoelastic_utility(post_tax_incomes[i], tax_rebate_avg) for i in range(args.num_agents)]
-        tax_planner.log_stats(k, wandb_logger, z=pre_tax_incomes, u=u, debug=args.debug)
         
         if args.wandb:
             wandb.log(wandb_logger)
@@ -301,7 +197,7 @@ def create_argument_parser():
     parser.add_argument('--debug', type=bool, default=True, help='Enable debug mode') 
     parser.add_argument('--llm', default='llama3:8b', type=str, help='Language model to use')
     parser.add_argument('--prompt-algo', default='io', choices=['io', 'cot'], help='Prompting algorithm to use')
-    parser.add_argument('--scenario', default='rational', choices=['rational', 'bounded', 'democratic'], help='Scenario')
+    parser.add_argument('--scenario', default='monopoly', choices=['monopoly'], help='Scenario')
     parser.add_argument('--percent-ego', type=int, default=100)
     parser.add_argument('--percent-alt', type=int, default=0)
     parser.add_argument('--percent-adv', type=int, default=0)
@@ -317,6 +213,14 @@ def create_argument_parser():
     parser.add_argument('--warmup', default=0, type=int)
     parser.add_argument('--elasticity', nargs='+', type=float, default=[0.4], 
                     help='Elasticity values for tax brackets')
+    parser.add_argument('--alpha', type=float, default=0.33, help='Capital share in Cobb-Douglas production')
+    parser.add_argument('--capital', type=float, default=1.0, help='Fixed capital level K0')
+    parser.add_argument('--productivity', type=float, default=1.0, help='Base productivity A0')
+    parser.add_argument('--rho', type=float, default=0.0, help='Policy shifter rho for productivity A(rho)')
+    parser.add_argument('--tau', type=float, default=0.0, help='Output tax/subsidy tau (can be negative)')
+    parser.add_argument('--wage', type=float, default=1.0, help='Wage rate w')
+    parser.add_argument('--demand-a', type=float, default=10.0, help='Inverse demand intercept a')
+    parser.add_argument('--demand-b', type=float, default=0.1, help='Inverse demand slope b')
     parser.add_argument('--wandb', action='store_true', help='Enable wandb logging')
     parser.add_argument('--timeout', type=int, default=30, help='Timeout for LLM calls')
     
