@@ -433,11 +433,27 @@ class Worker(LLMAgent):
         if self.role == 'default':
             self.message_history[timestep]['historical'] += f'utility: u = pi = {self.utility}\n'
             self.utility_history.append(self.utility)
-            self.message_history[timestep]['metric'] = self.utility
         else:
             self.adjusted_utility = self.utility
             self.utility_history.append(self.adjusted_utility)
-            self.message_history[timestep]['metric'] = self.adjusted_utility
+        metric_value = self.profit if self.scenario == 'monopoly' else (
+            self.utility if self.role == 'default' else self.adjusted_utility
+        )
+        self.message_history[timestep]['metric'] = metric_value
+
+        state = self.message_history[timestep].setdefault('state', {})
+        state.setdefault('scenario', self.scenario)
+        state['timestep'] = timestep
+        outcome = state.get('outcome', {})
+        if not isinstance(outcome, dict):
+            outcome = {}
+        outcome.update({
+            'Q': self.output,
+            'P': self.price,
+            'profit': self.profit,
+            'surplus': self.surplus,
+        })
+        state['outcome'] = outcome
 
         # reason about other agents effect on utility:
         # TODO: which utility to use for reasoning?
@@ -627,6 +643,10 @@ class Worker(LLMAgent):
             if policy is not None:
                 self.tau = policy.get('tau', self.tau)
                 self.rho = policy.get('rho', self.rho)
+            state = self.message_history[timestep].setdefault('state', {})
+            state.setdefault('scenario', self.scenario)
+            state['timestep'] = timestep
+            state['policy'] = {'tau': self.tau, 'rho': self.rho}
             self.message_history[timestep]['historical'] += f'policy: tau={self.tau}, rho={self.rho}\n'
             self.message_history[timestep]['historical'] += f'productivity: A={self.productivity()}\n'
             self.message_history[timestep]['historical'] += f'capital: K0={self.capital}\n'
@@ -657,6 +677,14 @@ class Worker(LLMAgent):
         elif m_type == Message.ACTION:
             self.message_history[timestep]['historical'] += f'LABOR: = l {self.l}\n'
             self.message_history[timestep]['action'] += f'LABOR: = {self.l}\n'
+            state = self.message_history[timestep].setdefault('state', {})
+            state.setdefault('scenario', self.scenario)
+            state['timestep'] = timestep
+            action = state.get('action', {})
+            if not isinstance(action, dict):
+                action = {}
+            action['LABOR'] = self.l
+            state['action'] = action
         return
 
     def log_stats(self, timestep: int, logger: dict, debug: bool=False) -> dict:

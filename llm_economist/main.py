@@ -193,6 +193,8 @@ def create_argument_parser():
     parser.add_argument('--planner-type', default='LLM', choices=['LLM', 'US_FED', 'SAEZ', 'SAEZ_THREE', 'SAEZ_FLAT', 'UNIFORM'], help='Type of tax planner')
     parser.add_argument('--max-timesteps', type=int, default=1000, help='Maximum number of timesteps for the simulation')
     parser.add_argument('--history-len', type=int, default=20, help='Length of history to consider')
+    parser.add_argument('--k_best_hist', type=int, default=5, help='Number of best timesteps to include in history')
+    parser.add_argument('--lhf_include_recency', type=bool, default=True, help='Include recent timesteps in history selection')
     parser.add_argument('--two-timescale', type=int, default=25, help='Interval for two-timescale updates')
     parser.add_argument('--debug', type=bool, default=True, help='Enable debug mode') 
     parser.add_argument('--llm', default='llama3:8b', type=str, help='Language model to use')

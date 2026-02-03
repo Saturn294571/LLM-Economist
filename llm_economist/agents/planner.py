@@ -237,6 +237,16 @@ class TaxPlanner(LLMAgent):
 
             self.message_history[timestep]['historical'] += f'social welfare: swf = u_1/z_1 + ... + u_N/z_N = {self.swf}\n'
             self.message_history[timestep]['metric'] = self.swf
+            state = self.message_history[timestep].setdefault('state', {})
+            scenario_name = getattr(self.args, 'scenario', None) or 'planner'
+            state.setdefault('scenario', scenario_name)
+            state['timestep'] = timestep
+            state['policy'] = {'tax_rates': self.tax_rates}
+            outcome = state.get('outcome', {})
+            if not isinstance(outcome, dict):
+                outcome = {}
+            outcome['swf'] = self.swf
+            state['outcome'] = outcome
 
             self.message_history[timestep]['user_prompt'] += 'Use the historical data to influence your answer in order to maximize SWF, while balancing exploration and exploitation by choosing varying rates of TAX. '
             avg_swf = np.average(self.swf_history[-self.history_len:])
@@ -262,6 +272,15 @@ class TaxPlanner(LLMAgent):
             assert tax is not None
             self.message_history[timestep]['action'] = f"TAX: {tax}.\n"
             self.message_history[timestep+1]['historical'] += f"TAX: {tax}.\n"
+            state = self.message_history[timestep].setdefault('state', {})
+            scenario_name = getattr(self.args, 'scenario', None) or 'planner'
+            state.setdefault('scenario', scenario_name)
+            state['timestep'] = timestep
+            action = state.get('action', {})
+            if not isinstance(action, dict):
+                action = {}
+            action['TAX'] = tax
+            state['action'] = action
 
         return
 

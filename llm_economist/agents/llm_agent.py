@@ -7,6 +7,7 @@ from ..models.vllm_model import VLLMModel, OllamaModel
 from ..models.openrouter_model import OpenRouterModel
 from ..models.gemini_model import GeminiModel, GeminiModelViaOpenRouter
 from ..utils.bracket import get_num_brackets, get_default_rates
+from ..utils.lhf_selector import select_history_indices
 from collections import Counter
 import numpy as np
 
@@ -73,7 +74,8 @@ class LLMAgent:
             'historical': '',
             'action': '',
             'leader': 'planner',
-            'metric': 0
+            'metric': 0,
+            'state': {}
         }]
         return
 
@@ -86,29 +88,91 @@ class LLMAgent:
             'historical': '',
             'action': '',
             'leader': '',
-            'metric': 0
+            'metric': 0,
+            'state': {}
         }
         self.message_history.append(new_msg_dict)
         return
+
+    def _format_state_line(self, label: str, data: dict, preferred_order: list[str]) -> str:
+        if not isinstance(data, dict) or not data:
+            return ''
+        parts = []
+        used = set()
+        for key in preferred_order:
+            if key in data:
+                parts.append(f"{key}={data[key]}")
+                used.add(key)
+        for key, value in data.items():
+            if key in used:
+                continue
+            parts.append(f"{key}={value}")
+        if not parts:
+            return ''
+        return f"{label}: " + ", ".join(parts) + "\n"
+
+    def _format_historical_entry(self, index: int) -> str:
+        msg = self.message_history[index]
+        leader = msg.get('leader', '')
+        header = f"Timestep {index}"
+        if leader:
+            header += f" (leader {leader})"
+        header += ":\n"
+
+        state = msg.get('state') or {}
+        if isinstance(state, dict) and state:
+            lines = []
+            policy_line = self._format_state_line("Policy", state.get('policy', {}), ['tau', 'rho'])
+            if policy_line:
+                lines.append(policy_line)
+            action_line = self._format_state_line("Action", state.get('action', {}), ['LABOR'])
+            if action_line:
+                lines.append(action_line)
+            outcome_line = self._format_state_line(
+                "Outcome",
+                state.get('outcome', {}),
+                ['Q', 'P', 'profit', 'surplus', 'welfare', 'swf', 'utility']
+            )
+            if outcome_line:
+                lines.append(outcome_line)
+            if lines:
+                return header + "".join(lines)
+
+        return header + msg.get('historical', '')
     
     def get_historical_message(self, timestep: int, retry: bool=False, include_user_prompt: bool=True) -> str:
-        unique_metrics = set()  # Set to store unique 'metric' values
-        sorted_message_history = []  # List to store sorted unique entries
+        k_best_hist = getattr(self.args, 'k_best_hist', 5)
+        include_recency = getattr(self.args, 'lhf_include_recency', True)
+        selected = select_history_indices(self.message_history, timestep, self.history_len, k_best_hist, include_recency)
+        recency_indices = selected.get('recency', [])
+        best_indices = selected.get('best', [])
+        rec_set = set(recency_indices)
+        best_set = set(best_indices)
+        overlap = sorted(rec_set & best_set)
+        unique = sorted(rec_set | best_set)
+        self.logger.info(
+            "LHF_SELECT t=%s recency=%s best=%s overlap=%s unique=%s best_head=%s overlap_head=%s",
+            timestep,
+            len(recency_indices),
+            len(best_indices),
+            len(overlap),
+            len(unique),
+            best_indices[:5],
+            overlap[:5],
+        )
 
-        # Sort the dictionary by 'metric' key in descending order
-        for item in sorted(self.message_history, key=lambda x: x['metric'], reverse=True):
-            if str(item['metric']) + str(item['action']) not in unique_metrics:
-                unique_metrics.add(str(item['metric']) + str(item['action']))
-                sorted_message_history.append(item)
         output = 'Historical data:\n'
-        for t in range(max(0, timestep-min(self.history_len, len(self.message_history))), timestep+1):
-            output += f'Timestep {t}:\n'
-            output += self.message_history[t]['historical']
-        N = min(5, len(sorted_message_history))
-        output += f'Best {N} timesteps:\n'
-        for i in range(N):
-            output += f"Timestep {sorted_message_history[i]['timestep']} (leader {self.message_history[t]['leader']}):\n"
-            output += sorted_message_history[i]['historical']
+        for t in recency_indices:
+            output += self._format_historical_entry(t)
+
+        if recency_indices:
+            recency_set = set(recency_indices)
+            best_indices = [idx for idx in best_indices if idx not in recency_set]
+
+        output += f'Best {len(best_indices)} timesteps:\n'
+        for idx in best_indices:
+            output += self._format_historical_entry(idx)
+
         if include_user_prompt:
             output += self.message_history[timestep]['user_prompt']
         if retry:
